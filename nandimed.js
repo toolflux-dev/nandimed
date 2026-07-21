@@ -234,7 +234,6 @@ function vSetup(){
   + '<h1 style="text-align:center;font-size:1.5rem;letter-spacing:-.02em">NANDI <span style="color:var(--accent)">Med</span></h1>'
   + '<div style="text-align:center;font-size:.6rem;font-weight:700;letter-spacing:.28em;text-transform:uppercase;color:var(--mut-2);margin-top:3px">by Flux</div>'
   + '<p class="note" style="text-align:center;margin:14px auto 18px;max-width:340px">Register your clinic once. Your patient records stay on this device and back up privately to the cloud.</p>'
-  + setupInstallBanner()
   + '<div class="block"><div class="block-b">'
   + '<div class="field"><label>Clinic name</label><input class="ctl" id="su-clinic" placeholder="e.g. Shanti Ayurveda Clinic" autocomplete="off"></div>'
   + '<div class="field"><label>Doctor name</label><input class="ctl" id="su-doc" placeholder="Dr. ..." autocomplete="off"></div>'
@@ -245,6 +244,7 @@ function vSetup(){
   + '<div class="field"><label>Country code</label><input class="ctl mono" id="su-cc" value="91" inputmode="numeric"></div></div>'
   + '<div class="field"><label>Clinic address <span class="hint">optional</span></label><textarea class="ctl" id="su-addr" placeholder="Printed on the prescription letterhead"></textarea></div>'
   + '</div></div>'
+  + setupInstallBanner()
   + '<button class="btn primary btn-xl block" style="margin-top:18px" onclick="submitSetup()">Start '+TRIAL_DAYS+'-day free trial</button>'
   + '<p class="note" style="text-align:center;margin-top:12px">No card needed for the trial. '+String.fromCharCode(8377)+'299 / month afterwards.</p>'
   + '</div>';
