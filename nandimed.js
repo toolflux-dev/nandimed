@@ -10,6 +10,8 @@
 const DB_KEY   = 'nandimed.db.v1';
 const SEEN_KEY = 'nandimed.seen';
 const TRIAL_DAYS = 15;
+const LICENSE_GRACE_DAYS   = 5;   // keep working past expiry while renewal syncs
+const LICENSE_RECHECK_DAYS = 3;   // how often to re-verify with the backend
 const RAZORPAY_PLAN_LINK = 'https://rzp.io/rzp/REPLACE_ME'; // set when a real plan exists
 const APP_VERSION = '1.0';
 
@@ -98,6 +100,7 @@ const I = {
   spark:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18"/></svg>',
   heart:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20s-7-4.5-9.5-9A4.8 4.8 0 0 1 12 6a4.8 4.8 0 0 1 9.5 5c-2.5 4.5-9.5 9-9.5 9Z"/></svg>',
   file:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v4h4M9 13h6M9 17h6"/></svg>',
+  download:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>',
 };
 const markSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3v6a5 5 0 0 0 10 0V3"/><path d="M4 3H2.5m1.5 0h1.5M14 3h-1.5m1.5 0h1.5"/><path d="M9 14v2a6 6 0 0 0 12 0v-2"/><circle cx="21" cy="10" r="1.8"/></svg>';
 
@@ -121,11 +124,40 @@ function licenseStatus(){
   const c=db.clinic; if(!c) return {state:'none'};
   const lic=c.license;
   const now=effectiveNow();
-  if(lic && lic.expiresAt && lic.expiresAt>now) return {state:'licensed', plan:lic.plan, until:lic.expiresAt};
+  if(lic && lic.token && /^NM[0-9A-F]{64}$/.test(lic.token)){
+    if(lic.expiresAt && lic.expiresAt>now) return {state:'licensed', plan:lic.plan, until:lic.expiresAt};
+    // Renewal may not have synced yet. Keep working for a grace window rather
+    // than locking a paying doctor out mid-clinic over a network hiccup.
+    if(lic.expiresAt && now-lic.expiresAt < LICENSE_GRACE_DAYS*864e5)
+      return {state:'licensed', plan:lic.plan, until:lic.expiresAt, grace:true};
+  }
   const started=c.trialStartedAt||now;
   const left=Math.ceil((started+TRIAL_DAYS*864e5-now)/864e5);
   if(left>0) return {state:'trial', left};
   return {state:'expired'};
+}
+// Quietly re-check the subscription every few days so cancellations and
+// renewals both land without the doctor doing anything.
+function verifyLicenseIfNeeded(){
+  const c=db.clinic;
+  if(!c||!c.backendUrl||!c.license||!c.license.email) return;
+  const now=effectiveNow(), last=c.license.lastVerified||0;
+  if(now-last < LICENSE_RECHECK_DAYS*864e5) return;
+  backendFetch('action=verify&email='+encodeURIComponent(c.license.email)+'&token='+encodeURIComponent(c.license.token))
+    .then(r=>{
+      if(r&&r.valid){
+        c.license.expiresAt=r.expiresAt||c.license.expiresAt;
+        c.license.lastVerified=now; c.license.strikes=0;
+      }else if(r&&r.expired){
+        // Server says the subscription lapsed. Three strikes before locking,
+        // so one bad response can't wrongly paywall a paying clinic.
+        c.license.strikes=(c.license.strikes||0)+1;
+        if(c.license.strikes>=3){ c.license=null; }
+      }
+      saveDB(false);
+      if(licenseStatus().state==='expired') render();
+    })
+    .catch(()=>{});   // offline: leave the license alone
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -171,11 +203,11 @@ function navbar(){
   const t=ui.tab, r=ui.route;
   const on=x=>(!r&&t===x)?'on':'';
   return '<div class="nav">'
-    + '<button class="'+on('home')+'" onclick="go(\'home\')">'+I.home+'<span>Home</span></button>'
-    + '<button class="'+on('patients')+'" onclick="go(\'patients\')">'+I.users+'Patients</button>'
+    + '<button data-tab="home" class="'+on('home')+'" onclick="go(\'home\')">'+I.home+'<span>Home</span></button>'
+    + '<button data-tab="patients" class="'+on('patients')+'" onclick="go(\'patients\')">'+I.users+'Patients</button>'
     + '<div class="fab-wrap"><button class="fab" onclick="newConsult()" aria-label="New consultation">'+I.plus+'</button><span>Consult</span></div>'
-    + '<button class="'+on('reminders')+'" onclick="go(\'reminders\')">'+I.bell+'Reminders</button>'
-    + '<button class="'+on('settings')+'" onclick="go(\'settings\')">'+I.gear+'Settings</button>'
+    + '<button data-tab="reminders" class="'+on('reminders')+'" onclick="go(\'reminders\')">'+I.bell+'Reminders</button>'
+    + '<button data-tab="settings" class="'+on('settings')+'" onclick="go(\'settings\')">'+I.gear+'Settings</button>'
     + '</div>';
 }
 
@@ -221,11 +253,12 @@ function submitSetup(){
     clinicId: slug(name)+'-'+rid().slice(-4),
     accessKey: rid()+rid(),
     trialStartedAt: effectiveNow(),
-    license:null, backendUrl:'', publicUrl:''
+    license:null, backendUrl:'', publicUrl:'', tourDone:false
   };
   saveDB(false);
   toast('Welcome, '+doc,'ok');
   ui.tab='home'; render();
+  setTimeout(startTour, 350);   // first-run walkthrough
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -848,6 +881,11 @@ function vSettings(){
   }
   s+='</div></div>';
   // clinic profile
+  // install + tutorial
+  s+='<div class="block" style="margin-bottom:14px"><div class="block-h">'+I.download+'<h3>App &amp; help</h3></div><div class="block-b">'
+    +installCard()
+    +'<button class="btn btn-lg block" style="margin-top:12px" onclick="startTour()">'+I.spark+' Replay the tutorial</button>'
+    +'</div></div>';
   s+='<div class="block" style="margin-bottom:14px"><div class="block-h">'+I.stetho+'<h3>Clinic profile</h3></div><div class="block-b">'
     +setField('Clinic name','set-name',c.name)
     +setField('Doctor name','set-doc',c.doctorName)
@@ -1083,6 +1121,186 @@ function confirmSheet(title,msg,onYes,yesLabel,noLabel){
     +'<button class="btn primary grow" onclick="(window.__confirmYes||function(){})();closeModal()">'+esc(yesLabel||'Confirm')+'</button></div>');
 }
 
+/* ══════════════════════════════════════════════════════════════
+   INSTALL — Android/desktop get the native prompt; iOS has no API
+   so it gets written instructions instead.
+   ══════════════════════════════════════════════════════════════ */
+let deferredInstall=null;
+addEventListener('beforeinstallprompt', e=>{
+  e.preventDefault();            // keep it, fire it from our own button
+  deferredInstall=e;
+  const b=$('#install-btn'); if(b) b.style.display='';
+});
+addEventListener('appinstalled', ()=>{
+  deferredInstall=null;
+  toast('Installed. Open it from your home screen','ok');
+  if(ui.tab==='settings') render();
+});
+function isStandalone(){
+  return matchMedia('(display-mode: standalone)').matches || navigator.standalone===true;
+}
+function platform(){
+  const ua=navigator.userAgent||'';
+  if(/iPhone|iPad|iPod/i.test(ua)) return 'ios';
+  if(/Android/i.test(ua)) return 'android';
+  return 'desktop';
+}
+function doInstall(){
+  if(!deferredInstall){ toast('Use your browser menu to install','err'); return; }
+  deferredInstall.prompt();
+  deferredInstall.userChoice.then(()=>{ deferredInstall=null; const b=$('#install-btn'); if(b) b.style.display='none'; });
+}
+// Settings card that teaches installation on whatever device this is.
+function installCard(){
+  if(isStandalone()){
+    return '<div class="install-card"><div class="ic">'+I.check+'</div><div><b>Installed</b>'
+      +'<p>You are running the installed app. It opens without a browser and works offline.</p></div></div>';
+  }
+  const p=platform();
+  let steps='';
+  if(p==='ios'){
+    steps='<ol class="install-steps"><li>Tap the <b>Share</b> button at the bottom of Safari</li>'
+      +'<li>Scroll down and tap <b>Add to Home Screen</b></li><li>Tap <b>Add</b></li></ol>'
+      +'<p style="margin-top:8px;font-size:.72rem">On iPhone this only works in Safari, not Chrome.</p>';
+  }else if(p==='android'){
+    steps='<ol class="install-steps"><li>Tap the <b>⋮</b> menu in Chrome</li>'
+      +'<li>Tap <b>Install app</b> or <b>Add to Home screen</b></li><li>Confirm <b>Install</b></li></ol>';
+  }else{
+    steps='<ol class="install-steps"><li>Look for the <b>install icon</b> in the address bar (a screen with a down arrow)</li>'
+      +'<li>Or open the <b>⋮</b> menu and choose <b>Install NANDI Med</b></li>'
+      +'<li>The app then opens in its own window, like any desktop program</li></ol>';
+  }
+  return '<div class="install-card"><div class="ic">'+I.download+'</div><div style="min-width:0"><b>Install on this device</b>'
+    +'<p>Get an icon on your '+(p==='desktop'?'desktop':'home screen')+', open it without the browser, and keep working with no internet.</p>'
+    +steps+'</div></div>'
+    +'<button class="btn primary btn-lg block" id="install-btn" onclick="doInstall()"'
+      +(deferredInstall?'':' style="display:none"')+'>'+I.download+' Install now</button>';
+}
+
+/* ══════════════════════════════════════════════════════════════
+   GUIDED TOUR — runs once after setup, replayable from Settings.
+   Steps may switch tabs or open a scratch consultation so the
+   doctor sees each feature in the real screen, not a mock.
+   ══════════════════════════════════════════════════════════════ */
+const TOUR=[
+  {t:'Welcome to NANDI Med',
+   b:'A two-minute tour of everything. You can stop anytime, and replay it later from Settings.',
+   tab:'home'},
+  {t:'Start a consultation',
+   b:'This button opens a new consultation. It is the button you will press most, so it sits in the middle of the bar on every screen.',
+   tab:'home', sel:'.nav .fab'},
+  {t:'The phone number is the patient file',
+   b:'Type the phone number first. If that patient has been here before, their full history loads instantly and you will see a "Returning patient" banner.',
+   consult:true, sel:'#f-phone'},
+  {t:'Complaint and history',
+   b:'What brought them in today, and the short background of the illness.',
+   consult:true, sel:'#f-complaint'},
+  {t:'Vitals',
+   b:'BP, pulse, temperature, SpO2 and weight. Leave blank whatever you did not measure. Nothing is compulsory.',
+   consult:true, sel:'#v-bpSys'},
+  {t:'Voice notes',
+   b:'Tap to dictate instead of typing. Your speech is written into the notes box as you talk, and you can edit it afterwards.',
+   consult:true, sel:'#rec-btn'},
+  {t:'This box is private',
+   b:'Your remedy, potency or dilution. It is stored for your records only, and is never printed, never shown to the patient, and never sent on WhatsApp.',
+   consult:true, sel:'#f-rx'},
+  {t:'This is what the patient receives',
+   b:'Add each medicine, then tap the chips to set when to take it and whether before or after food. You can pick more than one of each.',
+   consult:true, sel:'#med-list'},
+  {t:'Tests and documents',
+   b:'List any pending investigations, and attach reports, scans or photographs. Patients can add their own photos later through the WhatsApp link.',
+   consult:true, sel:'#inv-list'},
+  {t:'Your fee stays private',
+   b:'Recorded for your accounts only. Like the prescription box, the patient never sees it.',
+   consult:true, sel:'#f-fee'},
+  {t:'Follow-up reminder',
+   b:'Set a review date. The Reminders tab then shows you who is due, and sends them a WhatsApp nudge in one tap.',
+   consult:true, sel:'#f-remind-msg'},
+  {t:'After you save',
+   b:'You get one tap to send the advice on WhatsApp, and one tap to print it on your clinic letterhead.',
+   consult:true, sel:'.actionbar'},
+  {t:'All your patients',
+   b:'Every patient you have seen, searchable by name or phone. Tap anyone to see their whole visit history.',
+   tab:'patients', sel:'.nav button[data-tab="patients"]'},
+  {t:'Who is due today',
+   b:'Everyone with a follow-up date that has arrived, ready to message.',
+   tab:'reminders', sel:'.nav button[data-tab="reminders"]'},
+  {t:'Settings',
+   b:'Your clinic details for the prescription header, Google Sheet backup, your subscription, and this tour again whenever you want it.',
+   tab:'settings', sel:'.nav button[data-tab="settings"]'},
+  {t:'That is everything',
+   b:'Your records stay on this device and work with no internet. Connect a Google Sheet in Settings when you want a backup.',
+   tab:'home', last:true}
+];
+let tourIx=-1, tourOpenedConsult=false;
+
+function startTour(){
+  closeModal();
+  tourIx=0; tourOpenedConsult=false;
+  document.body.classList.add('touring');
+  showTourStep();
+}
+function showTourStep(){
+  const st=TOUR[tourIx];
+  if(!st){ endTour(); return; }
+  // put the app on the screen this step talks about
+  if(st.consult){
+    if(!ui.draft){ newConsult(); tourOpenedConsult=true; }
+  }else{
+    if(tourOpenedConsult){ ui.draft=null; tourOpenedConsult=false; }
+    if(st.tab){ ui.tab=st.tab; ui.route=null; render(); }
+  }
+  // setTimeout, not requestAnimationFrame: rAF never fires in a hidden or
+  // background tab, which would leave the tour invisible but active.
+  setTimeout(()=>paintTour(st), 16);
+}
+function paintTour(st){
+  let root=$('#tour-root');
+  if(!root){ root=document.createElement('div'); root.id='tour-root'; document.body.appendChild(root); }
+  const el=st.sel?$(st.sel):null;
+  if(el&&el.scrollIntoView) el.scrollIntoView({block:'center',behavior:'instant'});
+
+  const total=TOUR.length, n=tourIx+1;
+  const card='<div class="tour-card" id="tour-card">'
+    +'<div class="tour-count">Step '+n+' of '+total+'</div>'
+    +'<h3>'+esc(st.t)+'</h3><p>'+esc(st.b)+'</p>'
+    +'<div class="tour-dots">'+TOUR.map((_,i)=>'<span class="'+(i===tourIx?'on':'')+'"></span>').join('')+'</div>'
+    +'<div class="tour-btns">'
+      +(tourIx>0?'<button class="btn ghost" onclick="tourPrev()">Back</button>':'<button class="btn ghost" onclick="endTour()">Skip</button>')
+      +'<button class="btn primary grow" onclick="tourNext()">'+(st.last?'Start using it':'Next')+'</button>'
+    +'</div></div>';
+
+  if(el){
+    const r=el.getBoundingClientRect();
+    const pad=6;
+    root.innerHTML='<div class="tour-ring" style="top:'+(r.top-pad)+'px;left:'+(r.left-pad)+'px;width:'+(r.width+pad*2)+'px;height:'+(r.height+pad*2)+'px"></div>'+card;
+    const c=$('#tour-card');
+    const cw=c.offsetWidth, ch=c.offsetHeight;
+    const vw=innerWidth, vh=innerHeight;
+    let top = r.bottom+14, left = r.left + r.width/2 - cw/2;
+    if(top+ch>vh-10) top = Math.max(10, r.top-ch-14);      // flip above
+    left = Math.max(10, Math.min(left, vw-cw-10));          // keep on screen
+    c.style.top=top+'px'; c.style.left=left+'px';
+  }else{
+    root.innerHTML='<div class="tour-scrim"></div>'+card;
+    const c=$('#tour-card');
+    c.style.top=Math.max(10,(innerHeight-c.offsetHeight)/2)+'px';
+    c.style.left=Math.max(10,(innerWidth-c.offsetWidth)/2)+'px';
+  }
+}
+function tourNext(){ tourIx++; if(tourIx>=TOUR.length){ endTour(); return; } showTourStep(); }
+function tourPrev(){ if(tourIx>0){ tourIx--; showTourStep(); } }
+function endTour(){
+  tourIx=-1;
+  const root=$('#tour-root'); if(root) root.remove();
+  document.body.classList.remove('touring');
+  if(tourOpenedConsult){ ui.draft=null; tourOpenedConsult=false; }
+  if(db.clinic && !db.clinic.tourDone){ db.clinic.tourDone=true; saveDB(false); }
+  ui.tab='home'; ui.route=null; render();
+}
+// Re-anchor the highlight if the window changes size mid-tour.
+addEventListener('resize',()=>{ if(tourIx>=0) paintTour(TOUR[tourIx]); });
+
 /* ── Data export / import / reset ────────────────────────────── */
 function exportData(){
   const blob=new Blob([JSON.stringify(db,null,2)],{type:'application/json'});
@@ -1123,6 +1341,7 @@ Object.assign(window,{
   sendWhatsApp,waPatient,printRx,sendReminder,deleteVisit,
   saveProfile,openSubscribe,activateLicense,testBackend,pushSync,
   toggleRec,startRec,modal,closeModal,confirmSheet,exportData,importData,resetApp,copyText,
+  startTour,tourNext,tourPrev,endTour,doInstall,
   showPostSave
 });
 
@@ -1135,3 +1354,7 @@ if('serviceWorker' in navigator && (location.protocol==='https:'||location.hostn
 }
 // retry sync when back online
 window.addEventListener('online',()=>{ if(db.clinic&&db.clinic.backendUrl) pushSync(); });
+// re-check the subscription shortly after launch (never blocks the UI)
+setTimeout(verifyLicenseIfNeeded, 3000);
+// resume the walkthrough for a clinic that set up before the tour existed
+if(db.clinic && !db.clinic.tourDone) setTimeout(startTour, 600);
