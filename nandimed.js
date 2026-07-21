@@ -233,7 +233,8 @@ function vSetup(){
   + '<div class="hero-mark">'+markSvg+'</div>'
   + '<h1 style="text-align:center;font-size:1.5rem;letter-spacing:-.02em">NANDI <span style="color:var(--accent)">Med</span></h1>'
   + '<div style="text-align:center;font-size:.6rem;font-weight:700;letter-spacing:.28em;text-transform:uppercase;color:var(--mut-2);margin-top:3px">by Flux</div>'
-  + '<p class="note" style="text-align:center;margin:14px auto 22px;max-width:340px">Register your clinic once. Your patient records stay on this device and, if you connect a sheet, sync privately to your own Google account.</p>'
+  + '<p class="note" style="text-align:center;margin:14px auto 18px;max-width:340px">Register your clinic once. Your patient records stay on this device and back up privately to the cloud.</p>'
+  + setupInstallBanner()
   + '<div class="block"><div class="block-b">'
   + '<div class="field"><label>Clinic name</label><input class="ctl" id="su-clinic" placeholder="e.g. Shanti Ayurveda Clinic" autocomplete="off"></div>'
   + '<div class="field"><label>Doctor name</label><input class="ctl" id="su-doc" placeholder="Dr. ..." autocomplete="off"></div>'
@@ -1291,6 +1292,10 @@ addEventListener('beforeinstallprompt', e=>{
   e.preventDefault();            // keep it, fire it from our own button
   deferredInstall=e;
   const b=$('#install-btn'); if(b) b.style.display='';
+  // The event often fires after first paint. If the doctor is still on the
+  // registration screen, redraw so the one-tap Install button replaces the
+  // written steps.
+  if(!db.clinic && !$('#setup-install-btn') && $('.setup-install')) render();
 });
 addEventListener('appinstalled', ()=>{
   deferredInstall=null;
@@ -1311,6 +1316,40 @@ function doInstall(){
   deferredInstall.prompt();
   deferredInstall.userChoice.then(()=>{ deferredInstall=null; const b=$('#install-btn'); if(b) b.style.display='none'; });
 }
+/* Install prompt on the very first screen. A doctor who registers in a browser
+   tab and closes it has to find the link again; installing first avoids that.
+   Hidden once the app is running installed. */
+function setupInstallBanner(){
+  if(isStandalone()) return '';
+  const p=platform();
+  const where = p==='desktop' ? 'your desktop' : 'your home screen';
+  let how;
+  if(deferredInstall){
+    how = '<button class="btn primary btn-lg block" id="setup-install-btn" onclick="doInstall()" style="margin-top:10px">'
+        + I.download+' Install now</button>';
+  }else if(p==='ios'){
+    how = '<ol class="install-steps" style="margin-top:8px"><li>Tap <b>Share</b> at the bottom of Safari</li>'
+        + '<li>Tap <b>Add to Home Screen</b></li><li>Tap <b>Add</b></li></ol>'
+        + '<p class="note" style="margin-top:6px;font-size:.7rem">Must be Safari. This does not work in Chrome on iPhone.</p>';
+  }else if(p==='android'){
+    how = '<ol class="install-steps" style="margin-top:8px"><li>Tap the <b>⋮</b> menu in Chrome</li>'
+        + '<li>Tap <b>Install app</b></li><li>Confirm <b>Install</b></li></ol>';
+  }else{
+    how = '<ol class="install-steps" style="margin-top:8px"><li>Click the <b>install icon</b> in the address bar</li>'
+        + '<li>Or ⋮ menu → <b>Install NANDI Med</b></li></ol>';
+  }
+  return '<div class="setup-install">'
+    +'<div class="si-top"><div class="ic">'+I.download+'</div>'
+    +'<div><b>Add it to '+where+' first</b>'
+    +'<p>It opens like a normal app, works without internet, and you will not have to find this link again.</p></div></div>'
+    + how
+    +'<button class="btn ghost block" style="margin-top:8px" onclick="skipInstall()">I will do this later</button>'
+    +'</div>';
+}
+function skipInstall(){
+  const el=$('.setup-install'); if(el) el.remove();
+}
+
 // Settings card that teaches installation on whatever device this is.
 function installCard(){
   if(isStandalone()){
@@ -1502,7 +1541,7 @@ Object.assign(window,{
   sendWhatsApp,waPatient,printRx,sendReminder,deleteVisit,
   saveProfile,openSubscribe,activateLicense,testBackend,pushSync,
   toggleRec,startRec,modal,closeModal,confirmSheet,exportData,importData,resetApp,copyText,
-  startTour,tourNext,tourPrev,endTour,doInstall,
+  startTour,tourNext,tourPrev,endTour,doInstall,skipInstall,
   tryUnlock,forgotPin,doPinReset,changePinPrompt,savePin,removePin,lockNow,
   showPostSave
 });
