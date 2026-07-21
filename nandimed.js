@@ -10,6 +10,10 @@
 const DB_KEY   = 'nandimed.db.v1';
 const SEEN_KEY = 'nandimed.seen';
 const TRIAL_DAYS = 15;
+// Pre-wired so a new clinic syncs the moment it registers. A doctor never has
+// to paste a URL; Settings can still override these if a clinic self-hosts.
+const DEFAULT_BACKEND_URL = 'https://script.google.com/macros/s/AKfycbysek9iwOixeXERi7czOGWdjSX0oxX6OKoi8NR_ULxFlQXwEVhjq4b6KWnSpos8UJOwIg/exec';
+const DEFAULT_PUBLIC_URL  = 'https://toolflux-dev.github.io/nandimed/';
 const LICENSE_GRACE_DAYS   = 5;   // keep working past expiry while renewal syncs
 const LICENSE_RECHECK_DAYS = 3;   // how often to re-verify with the backend
 const RAZORPAY_PLAN_LINK = 'https://rzp.io/rzp/REPLACE_ME'; // set when a real plan exists
@@ -61,6 +65,11 @@ function loadDB(){
   if(!db.patients) db.patients={};
   if(!db.visits) db.visits=[];
   if(!db.ui) db.ui={tab:'home'};
+  // Clinics registered before the URLs were pre-wired get them filled in once.
+  if(db.clinic){
+    if(!db.clinic.backendUrl) db.clinic.backendUrl=DEFAULT_BACKEND_URL;
+    if(!db.clinic.publicUrl)  db.clinic.publicUrl=DEFAULT_PUBLIC_URL;
+  }
   return db;
 }
 let saveTimer=null;
@@ -253,7 +262,7 @@ function submitSetup(){
     clinicId: slug(name)+'-'+rid().slice(-4),
     accessKey: rid()+rid(),
     trialStartedAt: effectiveNow(),
-    license:null, backendUrl:'', publicUrl:'', tourDone:false
+    license:null, backendUrl:DEFAULT_BACKEND_URL, publicUrl:DEFAULT_PUBLIC_URL, tourDone:false
   };
   saveDB(false);
   toast('Welcome, '+doc,'ok');
