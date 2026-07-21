@@ -175,6 +175,7 @@ function verifyLicenseIfNeeded(){
 function render(){
   const app=$('#app');
   if(!db.clinic){ document.body.classList.add('no-nav'); app.innerHTML=vSetup(); afterMount(); return; }
+  if(isLocked()){ document.body.classList.add('no-nav'); app.innerHTML=vLock(); afterMount(); const p=$('#lock-pin'); if(p) p.focus(); return; }
   const ls=licenseStatus();
   if(ls.state==='expired'){ document.body.classList.add('no-nav'); app.innerHTML=vPaywall(ls); afterMount(); return; }
   document.body.classList.remove('no-nav');
@@ -903,13 +904,29 @@ function vSettings(){
     +'<div class="field"><label>Address</label><textarea class="ctl" id="set-addr">'+esc(c.address||'')+'</textarea></div>'
     +'<button class="btn primary block" onclick="saveProfile()">Save profile</button>'
     +'</div></div>';
-  // sync
-  s+='<div class="block" style="margin-bottom:14px"><div class="block-h">'+I.file+'<h3>Google Sheet backup</h3><div class="rt lbl">optional</div></div><div class="block-b">'
-    +'<p class="note" style="margin-bottom:12px">Paste the web-app URL from your deployed Apps Script to sync records to your own Google Sheet. Leave blank to keep everything on this device only.</p>'
-    +'<div class="field"><label>Backend URL</label><input class="ctl mono" id="set-url" value="'+esc(c.backendUrl||'')+'" placeholder="https://script.google.com/macros/s/.../exec" style="font-size:.8rem"></div>'
-    +'<div class="field"><label>Public app URL <span class="hint">for patient upload links</span></label><input class="ctl mono" id="set-public" value="'+esc(c.publicUrl||'')+'" placeholder="https://yourclinic.example/" style="font-size:.8rem"></div>'
-    +'<div class="row"><button class="btn grow" onclick="testBackend()">Test connection</button><button class="btn primary grow" onclick="pushSync(true)">Sync now</button></div>'
+  // passcode
+  s+='<div class="block" style="margin-bottom:14px"><div class="block-h">'+I.lock+'<h3>Passcode</h3>'
+    +'<div class="rt lbl">'+(hasPin()?'<span style="color:var(--green)">ON</span>':'<span style="color:var(--red)">OFF</span>')+'</div></div><div class="block-b">'
+    +'<p class="note" style="margin-bottom:12px">'
+    +(hasPin()
+      ? 'Your records are behind a passcode. The app re-locks after 5 minutes idle.'
+      : 'Anyone who picks up this device can read your patient records. Set a passcode to stop that.')
+    +'</p>'
+    +'<button class="btn '+(hasPin()?'':'primary')+' btn-lg block" onclick="changePinPrompt()">'
+    + (hasPin()?'Change or remove passcode':'Set a passcode')+'</button>'
+    +(hasPin()?'<button class="btn ghost block" style="margin-top:8px" onclick="lockNow()">Lock now</button>':'')
+    +'</div></div>';
+
+  // backup — URLs are pre-wired, so the doctor only ever sees a button
+  s+='<div class="block" style="margin-bottom:14px"><div class="block-h">'+I.file+'<h3>Cloud backup</h3>'
+    +'<div class="rt lbl">'+(c.backendUrl?'<span style="color:var(--green)">connected</span>':'off')+'</div></div><div class="block-b">'
+    +'<p class="note" style="margin-bottom:12px">Your records are saved on this device and copied to a secure cloud sheet, so nothing is lost if this device breaks.</p>'
+    +'<div class="row"><button class="btn grow" onclick="testBackend()">Check connection</button><button class="btn primary grow" onclick="pushSync(true)">Back up now</button></div>'
     +'<div id="sync-status" class="note" style="margin-top:10px"></div>'
+    +'<details style="margin-top:12px"><summary class="lbl" style="cursor:pointer">Advanced</summary>'
+    +'<div class="field" style="margin-top:10px"><label>Backend URL</label><input class="ctl mono" id="set-url" value="'+esc(c.backendUrl||'')+'" style="font-size:.72rem"></div>'
+    +'<div class="field"><label>Public app URL</label><input class="ctl mono" id="set-public" value="'+esc(c.publicUrl||'')+'" style="font-size:.72rem"></div>'
+    +'<p class="note">Only change these if you run your own backend.</p></details>'
     +'</div></div>';
   // clinic id
   s+='<div class="block" style="margin-bottom:14px"><div class="block-h">'+I.lock+'<h3>Clinic identity</h3></div><div class="block-b">'
@@ -1128,6 +1145,141 @@ function confirmSheet(title,msg,onYes,yesLabel,noLabel){
   modal(title, '<p class="note" style="margin-bottom:18px">'+esc(msg)+'</p>'
     +'<div class="row"><button class="btn ghost grow" onclick="closeModal()">'+esc(noLabel||'Cancel')+'</button>'
     +'<button class="btn primary grow" onclick="(window.__confirmYes||function(){})();closeModal()">'+esc(yesLabel||'Confirm')+'</button></div>');
+}
+
+/* ══════════════════════════════════════════════════════════════
+   PASSCODE LOCK
+   A privacy screen, not encryption. Records live in this browser's
+   storage, so someone with the unlocked device and technical skill
+   could still read them. What this stops is the realistic case: a
+   patient, a relative or staff picking up the phone on the desk.
+   ══════════════════════════════════════════════════════════════ */
+const LOCK_AFTER_MS = 5*60*1000;   // re-lock after 5 idle minutes
+
+/* Compact synchronous SHA-256. crypto.subtle is async and unavailable on
+   file:// pages, and the PIN check has to be usable during render. */
+function sha256Hex(msg){
+  function rr(n,x){ return (x>>>n)|(x<<(32-n)); }
+  var K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+  0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+  0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+  0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+  0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+  0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+  0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+  0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+  var H=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+  var b=[],i;
+  var u=unescape(encodeURIComponent(msg));           // UTF-8 bytes
+  for(i=0;i<u.length;i++) b.push(u.charCodeAt(i)&255);
+  var bl=b.length*8; b.push(0x80);
+  while(b.length%64!==56) b.push(0);
+  for(i=7;i>=0;i--) b.push((bl/Math.pow(2,i*8))&255);
+  for(i=0;i<b.length;i+=64){
+    var w=new Array(64),j;
+    for(j=0;j<16;j++) w[j]=(b[i+j*4]<<24)|(b[i+j*4+1]<<16)|(b[i+j*4+2]<<8)|b[i+j*4+3];
+    for(j=16;j<64;j++){
+      var s0=rr(7,w[j-15])^rr(18,w[j-15])^(w[j-15]>>>3);
+      var s1=rr(17,w[j-2])^rr(19,w[j-2])^(w[j-2]>>>10);
+      w[j]=(w[j-16]+s0+w[j-7]+s1)|0;
+    }
+    var a=H[0],bb=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+    for(j=0;j<64;j++){
+      var S1=rr(6,e)^rr(11,e)^rr(25,e), ch=(e&f)^(~e&g);
+      var t1=(h+S1+ch+K[j]+w[j])|0;
+      var S0=rr(2,a)^rr(13,a)^rr(22,a), mj=(a&bb)^(a&c)^(bb&c);
+      var t2=(S0+mj)|0;
+      h=g; g=f; f=e; e=(d+t1)|0; d=c; c=bb; bb=a; a=(t1+t2)|0;
+    }
+    H[0]=(H[0]+a)|0; H[1]=(H[1]+bb)|0; H[2]=(H[2]+c)|0; H[3]=(H[3]+d)|0;
+    H[4]=(H[4]+e)|0; H[5]=(H[5]+f)|0; H[6]=(H[6]+g)|0; H[7]=(H[7]+h)|0;
+  }
+  return H.map(function(x){ return ('00000000'+(x>>>0).toString(16)).slice(-8); }).join('');
+}
+function pinHash(pin){
+  // Salted with the clinic id so the same PIN hashes differently per install.
+  return sha256Hex(String(pin) + '|' + (db.clinic ? db.clinic.clinicId : ''));
+}
+function hasPin(){ return !!(db.clinic && db.clinic.pinHash); }
+function isLocked(){
+  if(!hasPin()) return false;
+  if(ui.unlocked && (effectiveNow()-ui.unlockedAt) < LOCK_AFTER_MS) return false;
+  return true;
+}
+function lockNow(){ ui.unlocked=false; ui.unlockedAt=0; render(); }
+function setPin(pin){
+  if(!/^\d{4,6}$/.test(String(pin))) return false;
+  db.clinic.pinHash = pinHash(pin);
+  saveDB(false);
+  ui.unlocked=true; ui.unlockedAt=effectiveNow();
+  return true;
+}
+function vLock(){
+  return '<div class="center-page view">'
+    +'<div class="hero-mark">'+I.lock+'</div>'
+    +'<h1 style="text-align:center;font-size:1.25rem">'+esc(db.clinic.name||'NANDI Med')+'</h1>'
+    +'<p class="note" style="text-align:center;margin:10px auto 18px;max-width:300px">Enter your passcode to open your patient records.</p>'
+    +'<div class="block"><div class="block-b">'
+    +'<div class="field"><label>Passcode</label>'
+    +'<input class="ctl mono" id="lock-pin" type="password" inputmode="numeric" autocomplete="off" '
+    +'style="font-size:1.6rem;text-align:center;letter-spacing:.4em" maxlength="6" '
+    +'onkeydown="if(event.key===\'Enter\')tryUnlock()"></div>'
+    +'<div id="lock-msg" class="note" style="text-align:center;min-height:18px"></div>'
+    +'<button class="btn primary btn-xl block" style="margin-top:10px" onclick="tryUnlock()">Unlock</button>'
+    +'</div></div>'
+    +'<button class="btn ghost block" style="margin-top:12px" onclick="forgotPin()">Forgot passcode?</button>'
+    +'</div>';
+}
+function tryUnlock(){
+  const el=$('#lock-pin'); if(!el) return;
+  const msg=$('#lock-msg');
+  if(pinHash(el.value)===db.clinic.pinHash){
+    ui.unlocked=true; ui.unlockedAt=effectiveNow();
+    ui.pinTries=0; render();
+  }else{
+    ui.pinTries=(ui.pinTries||0)+1;
+    el.value='';
+    if(msg) msg.innerHTML='<span style="color:var(--red)">Wrong passcode'+(ui.pinTries>=3?' — use "Forgot passcode?" below':'')+'</span>';
+  }
+}
+function forgotPin(){
+  modal('Reset passcode',
+    '<p class="note" style="margin-bottom:12px">Enter the email you registered this clinic with. '
+   +'This unlocks the app so you can set a new passcode. Your records are not touched.</p>'
+   +'<div class="field"><input class="ctl" id="pin-reset-email" type="email" placeholder="you@example.com"></div>'
+   +'<div id="pin-reset-msg" class="note" style="min-height:18px"></div>'
+   +'<button class="btn primary block" onclick="doPinReset()">Unlock</button>');
+}
+function doPinReset(){
+  const em=$('#pin-reset-email'), msg=$('#pin-reset-msg');
+  const given=(em?em.value:'').trim().toLowerCase();
+  if(given && given===String(db.clinic.email||'').trim().toLowerCase()){
+    db.clinic.pinHash=''; saveDB(false);
+    ui.unlocked=true; ui.unlockedAt=effectiveNow();
+    closeModal(); toast('Passcode cleared — set a new one in Settings','ok'); render();
+  }else if(msg){
+    msg.innerHTML='<span style="color:var(--red)">That is not the registered email</span>';
+  }
+}
+function changePinPrompt(){
+  modal(hasPin()?'Change passcode':'Set a passcode',
+    '<p class="note" style="margin-bottom:12px">4 to 6 digits. You will be asked for this each time you open the app.</p>'
+   +'<div class="field"><label>New passcode</label><input class="ctl mono" id="np1" type="password" inputmode="numeric" maxlength="6"></div>'
+   +'<div class="field"><label>Repeat it</label><input class="ctl mono" id="np2" type="password" inputmode="numeric" maxlength="6"></div>'
+   +'<div id="np-msg" class="note" style="min-height:18px"></div>'
+   +'<div class="row"><button class="btn primary grow" onclick="savePin()">Save</button>'
+   +(hasPin()?'<button class="btn ghost grow" onclick="removePin()">Remove</button>':'')+'</div>');
+}
+function savePin(){
+  const a=$('#np1').value, b=$('#np2').value, msg=$('#np-msg');
+  if(!/^\d{4,6}$/.test(a)){ msg.innerHTML='<span style="color:var(--red)">Use 4 to 6 digits</span>'; return; }
+  if(a!==b){ msg.innerHTML='<span style="color:var(--red)">The two do not match</span>'; return; }
+  setPin(a); closeModal(); toast('Passcode set','ok'); render();
+}
+function removePin(){
+  db.clinic.pinHash=''; saveDB(false); closeModal();
+  toast('Passcode removed — anyone opening this device can read your records','err');
+  render();
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -1351,6 +1503,7 @@ Object.assign(window,{
   saveProfile,openSubscribe,activateLicense,testBackend,pushSync,
   toggleRec,startRec,modal,closeModal,confirmSheet,exportData,importData,resetApp,copyText,
   startTour,tourNext,tourPrev,endTour,doInstall,
+  tryUnlock,forgotPin,doPinReset,changePinPrompt,savePin,removePin,lockNow,
   showPostSave
 });
 
